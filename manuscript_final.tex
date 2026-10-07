@@ -1,0 +1,301 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xurl}
+\usepackage[hidelinks]{hyperref}
+\usepackage{parskip}
+
+\title{CausalInvariantFlow: Calibrated Physics-Constrained Flow Matching for Rare-Event Forecasting in Chaotic Dynamical Systems under Known Interventions}
+\author{Edmund Eric Gah\\Independent Researcher\\\texttt{gahedmund146@gmail.com}}
+\date{October 2026}
+
+\newcommand{\method}{\textsc{CausalInvariantFlow}}
+\newcommand{\R}{\mathbb{R}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Chaotic systems impose a hard limit on long-horizon pointwise prediction because small state errors grow exponentially. This limit does not make forecasting useless. It changes the target: a useful forecaster should represent distributions of future trajectories, preserve dynamical structure, quantify uncertainty, and estimate the probability and timing of rare transitions. We present \method{}, a conditional flow-matching framework for this setting. The method combines generative trajectory prediction with solver-verified physics evaluation, horizon- and regime-conditional calibration, and explicit rare-event scoring under known parameter or forcing interventions. The contribution is intentionally narrow. We do not claim causal discovery, universal invariant preservation, or indefinite phase accuracy. Instead, we define a controlled benchmark in which the simulator exposes intervention semantics and supplies counterfactual ground truth.
+
+The paper specifies a preregistered evaluation across Lorenz-63 and a higher-dimensional chaotic system such as Lorenz-96 or Kuramoto--Sivashinsky. It compares persistence and linear extrapolation, reservoir computing, recurrent or neural-ODE baselines, diffusion trajectory models, unconstrained flow matching, physics-constrained flow matching, and calibrated ensembles. The primary measurements are distributional forecast scores, coverage and sharpness, valid prediction time in Lyapunov units, invariant and spectral drift, governing-equation residuals, event-probability calibration, transition-time error, tail-weighted path quality, intervention robustness, and simulator cost. Full empirical superiority claims are deliberately withheld until the preregistered benchmark is completed.
+\end{abstract}
+
+\textbf{Keywords:} chaotic dynamics; flow matching; uncertainty quantification; rare events; physics-informed machine learning; intervention-conditioned forecasting; calibration; Lorenz-63
+
+\section{Introduction}
+
+A deterministic forecast of a chaotic system can become useless after only a few characteristic growth times, even when the governing equations are known exactly. The reason is not necessarily model inadequacy. Small errors in the initial state, parameters, observations, or numerical representation are amplified by the dynamics. A method that is judged only by pointwise trajectory error will therefore be penalized for a limitation shared by the underlying system.
+
+The scientific forecasting problem is broader than phase tracking. After pointwise accuracy has degraded, a model may still be useful if it represents the future distribution, preserves invariant or statistical structure, estimates the probability of a transition, and identifies the conditions under which a rare event becomes more likely. These goals matter in fluid dynamics, climate dynamics, engineered systems, and any application in which the cost of missing an extreme transition is larger than the cost of a modest average error.
+
+Existing work supplies several relevant ingredients. Flow Matching trains continuous normalizing flows by regressing vector fields along prescribed conditional probability paths, avoiding the need to simulate the learned dynamics during training \cite{lipman2023flow}. Physics-constrained reservoir methods have shown that physical information can improve long-term statistics and extreme-event prediction in chaotic flows \cite{brunton2021physics}. Diffusion-based trajectory models can represent uncertainty and support conditional sampling of nonlinear events, including tail events that are difficult to query directly \cite{mora2023events}. Active-learning approaches can reduce the simulator budget required to characterize rare outcomes by selecting informative or output-weighted samples \cite{shayesteh2023extreme}.
+
+The unresolved question is whether a single forecasting system can make a credible joint trade-off among distributional accuracy, physical validity, uncertainty calibration, and rare-event skill. A model may improve a residual penalty while suppressing valid tail paths. It may produce wide prediction bands that achieve coverage but are not sharp. It may perform well in the training regime while misrepresenting event probabilities under parameter or forcing changes. These failure modes cannot be identified by mean squared error alone.
+
+We introduce \method{} as an evaluation-centered framework for this question. The model is conditional on an observed history, known simulator parameters, and a known intervention or forcing. It generates multiple future trajectories using flow matching. Generated paths are checked with an independent solver or residual evaluator. A separate calibration split is used to calibrate trajectory regions and event probabilities. Rare events are defined before training using fixed thresholds or basin-transition rules. The final test set contains held-out initial states, parameter values, intervention combinations, and longer horizons.
+
+The paper makes four contributions:
+\begin{enumerate}[leftmargin=*]
+    \item It defines a conditional generative forecasting architecture that separates flow matching, physical verification, and uncertainty calibration.
+    \item It proposes a benchmark that reports chaotic forecast quality in Lyapunov-time units and evaluates distributions, invariants, residuals, calibration, rare events, and interventions together.
+    \item It specifies ablations that measure the trade-off between physics enforcement and rare-tail fidelity rather than assuming that a smaller residual implies a better forecast.
+    \item It provides a reproducible implementation scaffold and explicit stopping rules that prevent unsupported claims when the full architecture or benchmark is not yet stable.
+\end{enumerate}
+
+The framework uses the phrase \emph{known interventions} rather than causal discovery. The simulator defines what changes when a parameter, forcing function, initial condition, or control is modified. The model is evaluated on whether its conditional forecasts respond correctly to those changes. No causal graph is inferred from observational data.
+
+\section{Related Work}
+
+\subsection{Flow matching and generative trajectory prediction}
+
+Flow Matching formulates continuous normalizing-flow training as regression of a vector field along a chosen conditional probability path \cite{lipman2023flow}. The method is simulation-free during training and can use Gaussian paths that include diffusion-like constructions as special cases. Its central advantage for scientific forecasting is conceptual as well as computational: the model learns a transport field from a simple base distribution to a data distribution, which naturally supports multiple samples for the same forecast condition.
+
+Generative trajectory models have often been evaluated in domains such as motion prediction, where multimodality is important but the underlying system is not necessarily chaotic in the dynamical-systems sense. Those results establish that flow-based and diffusion-based models can represent multiple plausible futures, but they do not establish that generated paths preserve invariant measures, satisfy governing equations, or maintain calibrated rare-event probabilities after long rollouts. \method{} therefore treats the generative model as one component of a scientific forecasting system rather than as the complete contribution.
+
+\subsection{Forecasting beyond the predictability horizon}
+
+Machine-learning models can reproduce selected long-run statistics of chaotic systems even when phase-aligned prediction is no longer possible. This distinction motivates reporting invariant-measure error, autocorrelation, spectra, and event statistics alongside valid prediction time. Physics-constrained reservoir computing provides a relevant precedent. In a chaotic flow model, adding physical information to reservoir training improved velocity statistics and prediction of extreme-event occurrence and amplitude \cite{brunton2021physics}. The result does not imply that physics constraints solve chaos. It shows that physical structure can improve the statistical and event-level behavior of a learned surrogate.
+
+\method{} extends this perspective to conditional generative forecasts. The relevant comparison is not only whether a model stays close to one reference trajectory. It is whether its ensemble of paths reproduces the distribution of future states, the frequency and timing of transitions, and the response to controlled changes in parameters or forcing. This also creates a sharper test of physics enforcement: residual reduction is useful only if it does not remove valid regions of the future distribution.
+
+\subsection{Diffusion models and rare-event sampling}
+
+Diffusion models have been adapted to chaotic dynamical systems for uncertainty quantification and event-conditioned sampling \cite{mora2023events}. A central difficulty is that conditioning on a nonlinear event is not equivalent to simply forcing a generated path to satisfy a constraint. The conditional distribution must remain statistically consistent with the underlying dynamics, including in the tails. Approximate conditional-score methods offer a way to sample rare events while retaining distributional information \cite{mora2023events}. This literature motivates evaluating event probability with proper scores and reliability analysis, and evaluating full event paths rather than only one visually plausible trajectory.
+
+\subsection{Physics-informed learning and calibration}
+
+Physics-informed methods can inject governing equations through residual penalties, constraints, projections, or specialized architectures. These mechanisms differ in what they guarantee. A soft penalty can reduce an average residual without enforcing exact validity on every sample. Projection can improve feasibility but may distort the data distribution. Post-hoc rejection can remove invalid paths while changing event frequencies. For this reason, the benchmark reports residual distributions, invariant drift, rejection or repair rates, and tail scores together.
+
+Uncertainty calibration is a separate problem. A physics loss does not imply calibrated probabilities, and a generative model can be overconfident even when its samples have small residuals. The calibration layer is therefore trained only on a held-out calibration split. It may use split-conformal trajectory regions, calibrated regression, or a validated ensemble/post-processing method. Any coverage interpretation will state its exchangeability or stationarity assumptions. No unconditional guarantee is claimed under arbitrary nonstationarity or intervention shift.
+
+\subsection{Active learning for extreme events}
+
+Rare-event studies often face a simulator-budget problem: random sampling may produce too few informative extremes. Output-weighted Bayesian experimental design and ensembles of neural operators have been used to identify extreme outcomes efficiently \cite{shayesteh2023extreme}. These methods motivate a secondary experiment in which random, space-filling, uncertainty-aware, information-gain, tail-weighted, and intervention-aware acquisition policies are compared under the same simulator-call budget. Active acquisition is not part of the core novelty claim; it is an optional extension that tests tail skill per simulator call.
+
+\section{Problem Formulation}
+
+Let a known simulator be written as
+\begin{equation}
+    \frac{d x(t)}{d t}=f\big(x(t);\theta,u(t)\big), \qquad x(0)=x_0,
+\end{equation}
+where $x(t)$ is the state, $\theta$ contains system parameters, and $u(t)$ is a known intervention or forcing. Given an observed history $h_t$, parameters $\theta$, intervention $u$, and forecast horizon $H$, the target is the conditional future distribution
+\begin{equation}
+    p\big(x_{t+1:t+H}\mid h_t,\theta,u\big).
+\end{equation}
+The target is not a single deterministic continuation. Multiple future paths can be valid because the forecast condition is incomplete, observations may be noisy or partial, and chaotic amplification makes small unresolved differences consequential.
+
+An event is defined before training. Examples include entering a high-energy set, crossing a threshold, or transitioning between pre-specified basins. For a generated path $\hat{x}_{1:H}^{(m)}$, the event indicator is $y^{(m)}\in\{0,1\}$, and the model estimates an event probability by the fraction of generated paths satisfying the event rule. Event thresholds, basin definitions, intervention grids, and test conditions are frozen before final evaluation.
+
+\section{CausalInvariantFlow Method}
+
+\subsection{Conditional flow matching}
+
+The model receives a condition vector
+\begin{equation}
+    c=\operatorname{Enc}(h_t,\theta,u),
+\end{equation}
+and generates a future trajectory with shape $H\times d$, where $d$ is the state dimension. A simple Gaussian base variable $z_0$ is transported toward the target trajectory $z_1$ along a conditional path. For the initial implementation, the path is linear interpolation:
+\begin{equation}
+    z_s=(1-s)z_0+s z_1, \qquad s\sim\operatorname{Uniform}(0,1).
+\end{equation}
+The vector field $v_\phi(z_s,s\mid c)$ is trained with
+\begin{equation}
+    \mathcal{L}_{FM}=\mathbb{E}\left[\left\|v_\phi(z_s,s\mid c)-(z_1-z_0)\right\|_2^2\right].
+\end{equation}
+
+The starter implementation uses a Fourier embedding of time and a multilayer perceptron conditioned on the current trajectory representation and the observed state. The final study will specify the history encoder, condition encoder, trajectory representation, solver, tolerances, number of generated samples, and hardware before model selection.
+
+At inference time, an ODE solver integrates the learned vector field from the base distribution to generate multiple future trajectories. The initial Euler sampler is a reproducibility scaffold, not a final claim about solver quality. The final benchmark will compare a stable solver configuration across all generative models and report the effect of solver tolerances separately.
+
+\subsection{Physics enforcement and verification}
+
+Four variants are compared:
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Unconstrained flow matching:} the generative model is trained without a physics term.
+    \item \textbf{Soft residual penalty:} the objective includes a governing-equation residual evaluated on decoded trajectories.
+    \item \textbf{Projection or constrained integration:} generated states are corrected or integrated subject to the known dynamics.
+    \item \textbf{Post-hoc rejection or repair:} invalid paths are removed or repaired after generation, with the rejection rate reported.
+\end{enumerate}
+
+The general augmented objective is
+\begin{equation}
+    \mathcal{L}=\mathcal{L}_{FM}+\lambda_{phys}\mathcal{L}_{phys}+\lambda_{tail}\mathcal{L}_{tail}+\lambda_{reg}\mathcal{L}_{reg}.
+\end{equation}
+The physics term may include a residual component
+\begin{equation}
+    \mathcal{L}_{phys}^{res}=\mathbb{E}\left[\left\|\partial_t\hat{x}(t)-f(\hat{x}(t);\theta,u(t))\right\|_2^2\right],
+\end{equation}
+and an invariant or feasibility component where the system provides one. Every final sample is evaluated independently from the training penalty. The paper will report the full residual distribution, initial-condition violations, invariant drift, numerical-invalid rate, and fraction of rejected or repaired samples.
+
+\subsection{Calibration}
+
+Calibration is fit on data that are not used for training or final testing. For each horizon and event regime, the study reports empirical coverage and sharpness of trajectory regions, CRPS or energy score, and reliability of event probabilities. If conformal calibration is used, the calibration split and the assumptions required for its interpretation will be stated explicitly.
+
+Calibration is evaluated under both in-distribution conditions and held-out interventions. A model is not considered successful merely because it achieves nominal coverage with very broad regions. The desired outcome is calibrated and relatively sharp uncertainty with good tail-event discrimination.
+
+\subsection{Intervention-conditioned forecasting}
+
+Interventions alter parameters, forcing, initial conditions, or controls whose meanings are known from the simulator. Training and validation use a declared region of the intervention space. Testing includes held-out parameter values, intervention combinations, and longer rollout horizons. Performance is measured by counterfactual state error, intervention-conditional coverage, event-probability error, and transition-time error.
+
+The term intervention-conditioned forecasting is used deliberately. The framework does not infer causal direction, identify hidden confounding, or estimate a causal effect from observational data.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/method_pipeline.png}
+    \caption{Conceptual architecture and evaluation pipeline. Known history, parameters, and interventions condition the flow-matching generator. Generated paths are evaluated independently for physical validity, calibration, and rare-event behavior. This figure describes the protocol and is not an empirical result.}
+    \label{fig:pipeline}
+\end{figure}
+
+\section{Experimental Design}
+
+\subsection{Benchmark systems}
+
+The first benchmark is Lorenz-63:
+\begin{equation}
+    \dot{x}=\sigma(y-x),\qquad
+    \dot{y}=x(\rho-z)-y,\qquad
+    \dot{z}=xy-\beta z,
+\end{equation}
+with the standard parameters $\sigma=10$, $\rho=28$, and $\beta=8/3$. This system provides an exact low-dimensional setting for interventions, solver verification, lobe transitions, and high-energy events.
+
+A second system, Lorenz-96 or Kuramoto--Sivashinsky, is added to test scalability, partial observations, and spatiotemporal statistics. A separate extreme-event system is included only if solver verification and tail sample counts are sufficient. Conclusions are not transferred from Lorenz-63 to real-world systems without an additional study of observation noise, hidden variables, and simulator discrepancy.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.82\linewidth]{figures/lorenz63_attractor.png}
+    \caption{Illustrative Lorenz-63 attractor generated from the reference equations with standard parameters after a burn-in interval. The trajectory is included to visualize the benchmark geometry; it is not a learned-model result.}
+    \label{fig:lorenz}
+\end{figure}
+
+\subsection{Data generation and splits}
+
+Reference trajectories are generated with a high-accuracy solver. Each trajectory records the software version, tolerances, step size, seed, initial state, parameters, intervention, and simulator configuration. Independent trajectories are used for train, validation, calibration, and test splits. Overlapping windows from a single trajectory are not randomly mixed across splits.
+
+The largest Lyapunov exponent is estimated for each benchmark so that horizons can be reported in Lyapunov-time units. The test set is frozen before the final evaluation. Event thresholds and intervention grids are also frozen before training on the final benchmark.
+
+\subsection{Baselines}
+
+The baseline suite contains persistence and linear extrapolation; tuned reservoir computing; a GRU, LSTM, or neural ODE; physics-constrained reservoir computing where feasible; a diffusion trajectory model; unconstrained conditional flow matching; physics-constrained flow matching; and deep ensembles with post-hoc calibration. All models receive the same training data, comparable hyperparameter-search budgets, and identical final test conditions.
+
+The simple baselines are retained even if they are not expected to win. They provide a safeguard against claiming progress that disappears under a transparent reference method.
+
+\subsection{Primary metrics}
+
+Distributional quality is measured with CRPS or energy score, marginal and joint coverage, sharpness, and Wasserstein or MMD distance for terminal and path statistics. When a valid density is available, a negative log score is also reported.
+
+Chaotic-dynamics quality is measured with valid prediction time at a fixed error threshold in Lyapunov units, invariant-measure error, autocorrelation and power-spectrum error, Lyapunov-spectrum error where identifiable, rollout stability, and the fraction of numerically invalid samples.
+
+Physical validity is measured with governing-equation residual distributions, conservation or invariant drift, initial and boundary violations, feasibility violations, and rejection or repair rates.
+
+Rare-event quality is measured with Brier and log scores for event probability, reliability and expected calibration error, recall at a fixed false-alarm rate, transition-time error and interval coverage, event amplitude or location error, and tail-weighted CRPS or energy score.
+
+Intervention robustness is measured with counterfactual state error, event-probability error, transition-time error, intervention-conditional coverage, and decision regret when a control is selected from the forecast.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/evaluation_scorecard.png}
+    \caption{Evaluation scorecard for the preregistered study. The design treats forecast quality, chaotic dynamics, physical validity, rare events, and intervention robustness as complementary axes. No single metric defines success.}
+    \label{fig:scorecard}
+\end{figure}
+
+\subsection{Statistical analysis}
+
+The core benchmark uses at least five random seeds when feasible. Results are aggregated over independent trajectories or test conditions, not over correlated windows treated as independent observations. We report means, standard deviations, and bootstrap confidence intervals. Paired comparisons use identical test conditions across models. Multiple primary comparisons are corrected, or one primary metric is declared for each research question before evaluation.
+
+A model is not declared a winner based on one seed, one trajectory, or MSE alone. If a method improves point error but loses calibration, physical validity, and tail score, the claim of overall improvement is withdrawn.
+
+\section{Results and Reporting Plan}
+
+The current repository contains the research design and a reproducible starter implementation. The implementation includes deterministic Lorenz-63 data generation, core forecast and calibration metrics, a conditional flow-matching vector field, a starter training loop, and a runtime-independent simulator smoke test. These artifacts establish the computational scaffold but do not constitute the final benchmark.
+
+The full results section will be populated only from committed experiment artifacts. It will contain analyses of distributional forecast quality; physical validity and invariant drift; calibration by horizon and regime; rare-event performance; intervention robustness; compute and simulator cost; and ablations and failure cases.
+
+The primary result statement will follow this form after verification:
+\begin{quote}
+\small
+Across [number] seeds and [number] test conditions, [model] achieved [value] versus [baseline] on [metric], with a [confidence interval] difference. The improvement [did/did not] persist under [held-out intervention or out-of-distribution condition].
+\end{quote}
+
+No numerical superiority claim is made in this manuscript before those fields are filled from reproducible result files.
+
+\section{Discussion}
+
+The central test is a joint one. A useful chaotic forecaster should not merely produce low average error. It should represent uncertainty that is calibrated by horizon and regime, preserve relevant statistical structure, and estimate rare-event probabilities without eliminating valid tail paths.
+
+Physics enforcement may improve residuals and invariant drift while damaging distributional fidelity if it over-constrains the generator. Conversely, tail-weighted training may improve event probability and transition-time scores while worsening common-regime average error. These are the scientific trade-offs the benchmark is designed to expose.
+
+The intervention evaluation also has a precise interpretation. If the model correctly changes its forecast when the simulator parameter or forcing changes, it has demonstrated intervention-conditioned forecasting on the declared benchmark. That result should not be described as causal discovery. A stronger causal claim would require a formal structural model, a causal estimand, and assumptions about hidden variables and measurement processes.
+
+The proposed framework can stand out scientifically if it remains auditable. The novelty is not the isolated use of flow matching, physics penalties, conformal calibration, rare-event sampling, or active learning. The defensible contribution is their controlled integration with a benchmark that can reveal when they conflict. This makes negative results informative: a physics layer that improves residuals but worsens calibrated tail forecasts is still a meaningful result if the trade-off is measured correctly.
+
+\section{Limitations}
+
+The initial benchmark uses known equations and therefore does not capture hidden variables, severe measurement error, unknown model discrepancy, or ambiguity in intervention semantics. Lorenz-63 is useful for exact verification but is not representative of all high-dimensional chaotic systems. A second spatiotemporal benchmark is necessary before making broader claims.
+
+Calibration procedures can fail under nonstationarity, dependence, or strong intervention shift. Soft physics penalties do not guarantee exact invariants. Rare-event scores are sensitive to threshold definitions and sample counts. Flow-matching efficiency depends on trajectory representation, vector-field parameterization, and ODE solver settings. These choices will be reported rather than treated as universal properties of flow matching.
+
+Finally, a reproducible starter implementation is not the same as a completed empirical study. The repository and this manuscript intentionally distinguish the proposed experiment from results that have actually been run, inspected, and committed.
+
+\section*{Data and Code Availability}
+
+The manuscript, LaTeX source, figures, deterministic Lorenz-63 utilities, starter flow-matching implementation, metric code, smoke test, and experiment protocol are available in the accompanying repository: \url{https://github.com/Eddiegah/CausalInvariantFlow}. The initial benchmark is simulator-generated from publicly specified dynamical equations; no restricted human-subject or proprietary dataset is used. Final numerical claims should be added only after the corresponding configurations, seeds, generated result tables, and figure-generation scripts have been committed.
+
+\section*{Author Contributions}
+
+Edmund Eric Gah: conceptualization, methodology, software, investigation design, visualization, and manuscript preparation.
+
+\section*{Funding}
+
+This work received no external funding.
+
+\section*{Competing Interests}
+
+The author declares no competing interests.
+
+\section{Conclusion}
+
+\method{} defines a rigorous route toward probabilistic forecasting of chaotic systems when pointwise prediction is horizon-limited. It combines conditional flow matching with independent physics verification, held-out calibration, rare-event scoring, and known-intervention evaluation. Its central scientific question is whether these components improve the joint trade-off among forecast quality, physical validity, uncertainty calibration, rare-event skill, and simulator cost.
+
+The framework is designed to make both success and failure publishable. It does not assume that a smaller physics residual means a better probabilistic forecast, that nominal coverage implies sharp uncertainty, or that correct intervention responses constitute causal discovery. Those claims will be tested through frozen splits, repeated seeds, proper scores, Lyapunov-scaled horizons, solver checks, and transparent ablations.
+
+\begin{thebibliography}{9}
+
+\bibitem{lipman2023flow}
+Y. Lipman, R. T. Q. Chen, H. Ben-Hamu, M. Nickel, and M. Le, ``Flow Matching for Generative Modeling,'' arXiv:2210.02747, 2023. Available: \url{https://arxiv.org/abs/2210.02747}
+
+\bibitem{brunton2021physics}
+C. G. Brunton et al., ``Short- and long-term predictions of chaotic flows and extreme events: a physics-constrained reservoir computing approach,'' \emph{Proceedings of the Royal Society A}, 2021. Available: \url{https://doi.org/10.1098/rspa.2021.0135}
+
+\bibitem{mora2023events}
+A. Mora et al., ``User-defined Event Sampling and Uncertainty Quantification in Diffusion Models for Physical Dynamical Systems,'' arXiv:2306.07526, 2023. Available: \url{https://arxiv.org/abs/2306.07526}
+
+\bibitem{shayesteh2023extreme}
+M. Shayesteh et al., ``Discovering and forecasting extreme events via active learning in neural operators,'' \emph{Nature Computational Science}, 2023. Available: \url{https://doi.org/10.1038/s43588-022-00376-0}
+
+\bibitem{chaosbenchmark2024}
+``A benchmark study of machine learning for chaotic dynamical systems,'' arXiv:2407.20158, 2024. Available: \url{https://arxiv.org/abs/2407.20158}
+
+\bibitem{fan2020chaos}
+H. Fan, J. Jiang, C. Zhang, X. Wang, and Y.-C. Lai, ``Long-term prediction of chaotic systems with machine learning,'' \emph{Physical Review Research}, 2(1), 012080, 2020. Available: \url{https://doi.org/10.1103/PhysRevResearch.2.012080}
+
+\bibitem{vlachas2020chaos}
+P. R. Vlachas et al., ``Backpropagation algorithms and reservoir computing in recurrent neural networks for the forecasting of complex spatiotemporal systems,'' \emph{Neural Networks}, 126, 191--217, 2020. Available: \url{https://arxiv.org/abs/1910.05266}
+
+\bibitem{angelopoulos2021conformal}
+A. N. Angelopoulos et al., ``Conformal Time-series Forecasting,'' in \emph{Advances in Neural Information Processing Systems}, 2021. Available: \url{https://proceedings.neurips.cc/paper/2021/hash/312f1ba2a72318edaaa995a67835fad5-Abstract.html}
+
+\bibitem{lakshminarayanan2017ensembles}
+B. Lakshminarayanan, A. Pritzel, and C. Blundell, ``Simple and Scalable Predictive Uncertainty Estimation using Deep Ensembles,'' in \emph{Advances in Neural Information Processing Systems}, 2017. Available: \url{https://papers.nips.cc/paper/7219-simple-and-scalable-predictive-uncertainty-estimation-using-deep-ensembles}
+
+\end{thebibliography}
+
+\end{document}
